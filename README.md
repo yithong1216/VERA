@@ -89,9 +89,17 @@ Post-hoc scores and the ResNet-50 verifier re-score the proposals of VERA's own 
 look-alike rejection minus OrthogonalDet's: 95% interval [1.8, 18.8]; minus MSP's: [8.3, 23.3].
 
 The ResNet-50 crop verifier (ImageNet ResNet-50 trained on known-type training crops, scoring the
-claimed-class margin) rejects as many look-alikes as VERA (VERA − verifier: −5.4, [−10.5, 0.3]). Its
-known AP50 drops to 82.1 and WI rises to 0.115, because the crop margin does not rank duplicate and
-poorly localized boxes below well-localized ones. The two kinds of evidence are complementary.
+claimed-class margin) is a strong rejector, but its advantage depends on the operating point:
+
+| Operating point | Ret. | LA ResNet-50 | LA VERA | VERA − ResNet-50 (95% CI) | AP50 ResNet-50 | AP50 VERA | KC-10 ResNet-50 | KC-10 VERA |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| Development-frozen τ | 94.2 / 94.7 | 52.0 | 46.6 | [−10.5, 0.3] | 82.1 | 93.3 | 40.7 | 59.9 |
+| Matched 90.5% test retention | 90.5 | 59.8 | 63.8 | [−4.9, 13.6] | 79.0 | 89.8 | 45.2 | 80.2 |
+
+Neither leads significantly in look-alike rejection at either point. The verifier rejects more Tu-22,
+and VERA rejects more KC-10 and F-22 (significant at matched retention). The verifier's known AP50
+and WI (0.115 vs 0.029) are much worse, because the crop margin does not rank duplicate and poorly
+localized boxes below well-localized ones. The two kinds of evidence are complementary.
 
 ### Per-type unknown rejection (%)
 
@@ -192,9 +200,29 @@ structure term adds nothing there.
 
 ### Latency
 
-RTX 4060 Laptop GPU, batch size 1, FP32, mean over 192 test images: **347 ms per image** (P95 648 ms).
-Part detection on proposal crops takes 180 ms of this time, and structure scoring plus region experts
-take 117 ms. Latency grows with the number of aircraft: 163 ms for 0–2 aircraft and 858 ms for ≥ 11.
+**Deployment build: 23.0 images/s (43.3 ms per image) at batch size 1** on an RTX 4060 Laptop GPU, over
+all 1,374 test images (22.8–23.1 images/s across four passes).
+
+- Detector, a sparse distilled part encoder and the region experts run as FP16 TensorRT engines.
+- Certificates fitted on the development split bound the evidence still to come from the terms already
+  computed. Part, region and flipped-view evidence is computed only for claims whose decision they leave
+  open: 39.9% of claims are settled after the coarse terms, 22.6% after structure, and flipped expert
+  views are needed for 4.9% of region canvases.
+- Accuracy relative to the full computation: look-alike rejection −0.23, all-five −0.09, known E2E
+  +0.16 points. Per type: E-8 0.0, Tu-22 −1.6, F-22 0.0, Tu-95 0.0, KC-10 +2.8 (5 of 177 aircraft).
+
+| Component (deployment build) | ms |
+|---|---:|
+| Detector | 8.7 |
+| Coarse terms and first certificate | 0.6 |
+| Part crops / sparse part detection / decoding | 1.9 / 18.0 / 2.4 |
+| Structure and second certificate / region canvases | 3.4 / 1.7 |
+| Region experts (flipped views only where needed) | 6.2 |
+| **Total** | **43.3** |
+
+The full FP32 reference implementation, which evaluates every term for every proposal, takes 347 ms
+per image (P95 648 ms, 192 test images). Part detection takes 180 ms of this time, and structure
+scoring plus region experts take 117 ms.
 
 <p align="center"><img src="docs/figures/qualitative.png" width="75%"></p>
 
