@@ -2,14 +2,13 @@
 
 **Open-World Aircraft Detection with Coarse-to-Fine Structural Evidence in Satellite Imagery**
 
-Yit Hong Wong, Chenglu Lu, Qijun Xia, Hongtian Chen
-School of Automation and Intelligent Sensing, Shanghai Jiao Tong University
+*Code and data for an anonymous submission. Author information is withheld for double-blind review.*
 
 ---
 
 Open-world aircraft detectors are built to *find* unseen aircraft. A harder failure starts after the
-aircraft is found: an unseen type that **resembles** a known type gets reported under the familiar
-identity, even though that identity may carry a different operational role. We call this failure
+aircraft is found: an unseen type that **resembles** a known type is reported under the familiar
+identity, although that identity may carry a different operational role. We call this failure
 **familiarity**.
 
 **VERA** (Verified Evidence Recognition of Aircraft) separates discovery from identity. Each detected
@@ -20,155 +19,211 @@ aircraft in general, using evidence at three granularities:
 2. **part structure** (part counts, positions and geometry),
 3. **tail and nose region experts**.
 
-Local disagreement can therefore overturn a plausible global appearance. At 90.5% known-aircraft
-retention on MAR20, look-alike rejection rises from **44.7% → 59.8%**, while known AP50 rises from
-**83.0 → 89.0**.
-
-<p align="center"><img src="docs/figures/motivation.png" width="100%"></p>
-
-*Global appearance separates distinct aircraft (a) but not look-alikes such as E-3 vs Tu-95 (b).
-Local nose and tail evidence restores the separation (c).*
-
-## Method
+Local disagreement can therefore overturn a plausible global appearance. With every method's
+threshold calibrated on the development split and frozen on the test split, VERA rejects **46.6%** of
+look-alike unknowns on MAR20 (strongest open-world detector: 36.9%; best post-hoc score: 33.0%) while
+keeping the highest known AP50 (**93.3**).
 
 <p align="center"><img src="docs/figures/framework.png" width="100%"></p>
 
+## Method
+
 A shared YOLO-World trunk feeds a class-agnostic aircraft head and a known-class head. The claim is
-c = argmax<sub>k</sub> q<sub>k</sub>(x), and it is verified by summing unit-weight evidence:
+c = argmax<sub>k</sub> q<sub>k</sub>(x). It is verified by adding five evidence terms, each divided by
+its standard deviation over localized known proposals of the development split:
 
 ```
-V(x, c) = log(a(x)·q_c(x)) + ℓ_app(x, c) + ℓ_str(x, c) + m_tail(x, c) + m_nose(x, c)
-          └──────── coarse ─────────────┘   └─────────────── fine ───────────────┘
+V(x, c) = log(a(x)·q_c(x))/σ_det + ℓ_app(x, c)/σ_app + ℓ_str(x, c)/σ_str + m_tail(x, c)/σ_tail + m_nose(x, c)/σ_nose
+          └──────────────── coarse ────────────────┘   └───────────────────── fine ─────────────────────┘
 ```
 
-The claim is accepted when V ≥ τ<sub>ρ</sub>, where τ<sub>ρ</sub> is the (1−ρ)-quantile of known
-scores (ρ = 0.905). Otherwise the box is kept and relabelled **unknown**.
+The claim is accepted when V ≥ τ. Otherwise the box keeps its location and is relabelled
+**unknown**. τ retains 90.5% of localized known aircraft **on the development split** and is then
+frozen. The scales σ are fitted on the development split as well; nothing is fitted on unknowns or on
+the test split.
 
 | Evidence | Idea | Code |
 |---|---|---|
 | Appearance ℓ<sub>app</sub> | PCA-whitened RoI feature; Gaussian LLR of the claimed class **vs. a background of aircraft in general** (Ledoit–Wolf shrinkage) | [`vera/appearance.py`](vera/appearance.py) |
-| Structure ℓ<sub>str</sub> | Parts from a frozen DINO part detector; size-normalized polar coordinates; count, polar and Fisher-weighted F-tail geometry scores; leave-one-out standardized class−background contrast | [`vera/structure.py`](vera/structure.py) |
-| Region experts m<sub>tail</sub>, m<sub>nose</sub> | Part-aligned 224×224 tail and nose canvases; ConvNeXt-Tiny experts; claimed-class log-odds clipped to [−3, 3] | [`vera/experts.py`](vera/experts.py) |
+| Structure ℓ<sub>str</sub> | Parts from a DINO part detector; size-normalized polar coordinates; count, polar and Fisher-weighted geometry scores; class−background contrast | [`vera/structure.py`](vera/structure.py) |
+| Region experts m<sub>tail</sub>, m<sub>nose</sub> | Part-aligned 224×224 tail and nose canvases; ConvNeXt-Tiny experts; claimed-class margin clipped to [−3, 3] | [`vera/experts.py`](vera/experts.py) |
 | Alignment | Heading axis, origin and half-wingspan from detected parts | [`vera/geometry.py`](vera/geometry.py) |
-| Decision | Evidence sum, retention-matched threshold, accept / unknown | [`vera/fusion.py`](vera/fusion.py) |
-| Evaluation | Known E2E accuracy and unknown rejection at fixed retention | [`vera/evaluation.py`](vera/evaluation.py) |
+| Decision | Development-split scales, standardized sum, frozen threshold, accept / unknown | [`vera/fusion.py`](vera/fusion.py) |
+| Evaluation | Achieved retention, known E2E, unknown rejection, scene-family bootstrap with τ fixed | [`vera/evaluation.py`](vera/evaluation.py) |
 
 <p align="center"><img src="docs/figures/structure_template.png" width="100%"></p>
 
-Because each regional term is clipped to |m<sub>r</sub>| ≤ 3, the region experts can only decide
-claims inside the band |V<sub>0</sub> − τ| < 6, where V<sub>0</sub> is the score without them. In
-that band, appearance and structure are inconclusive.
+## Protocol
+
+- **MAR20 splits** ([`data/splits.json`](data/splits.json)): train 1,805 / development 663 / test 1,374 images, split by airfield scene family.
+- **Unknown types:** E-8, Tu-22 and KC-10 form the **look-alike** group (LA); F-22 and Tu-95 are distinct. The five fighter types are neither known nor evaluated.
+- **Thresholds:** every method, VERA and all baselines, uses the threshold that retains 90.5% of localized known aircraft on the development split, frozen on test. The development and test splits differ in class mix, so achieved test retention (Ret.) differs from 90.5%. It is reported for every method.
+- **E2E:** fraction of all known ground-truth aircraft that are localized, accepted and correctly labelled.
+- **Intervals:** 95% scene-family bootstrap on the test split with each method's τ held fixed.
 
 ## Results
 
-All results are on the MAR20 test split at **90.5% localized-known retention**.
-- **Unknown types:** E-8, Tu-22 and KC-10 form the **look-alike** group (LA); F-22 and Tu-95 are distinct.
-- **E2E:** fraction of known ground-truth aircraft that are localized, accepted and correctly labelled.
+### Task 1 (MAR20 test split, development-calibrated frozen thresholds)
 
-### Task 1: comparison with open-world detectors and post-hoc scores
+| Method | Ret. | U-Recall ↑ | U-Precision ↑ | WI ↓ | A-OSE ↓ | All-5 ↑ | LA ↑ | AP50 ↑ | E2E ↑ |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Conf. (obj×cls) | 95.2 | 53.3 | 57.1 | 0.1546 | 991 | 53.2 | 32.4 | 86.7 | 92.7 |
+| MSP | 95.2 | 52.7 | 57.2 | 0.1470 | 1004 | 52.6 | 31.9 | 86.5 | 92.8 |
+| MaxLogit | 95.2 | 52.7 | 57.2 | 0.1470 | 1004 | 52.6 | 31.9 | 86.5 | 92.8 |
+| Energy | 95.0 | 52.8 | 57.0 | 0.1474 | 1002 | 52.7 | 33.0 | 86.4 | 92.6 |
+| GEN | 94.8 | 58.0 | 61.3 | 0.1223 | 887 | 58.0 | 28.7 | 87.8 | 92.9 |
+| MDS | 96.4 | 21.1 | 45.8 | 0.3388 | 1691 | 21.0 | 5.3 | 80.5 | 93.1 |
+| RMDS | 97.6 | 33.0 | 53.3 | 0.1474 | 1430 | 32.8 | 19.8 | 88.1 | **94.7** |
+| ResNet-50 crop verifier | 94.2 | 78.8 | **66.9** | 0.1152 | **446** | **78.6** | **52.0** | 82.1 | 93.9 |
+| ResNet-50 + conf. | 94.8 | 74.0 | 64.5 | 0.0910 | 547 | 73.9 | 37.6 | 89.8 | 94.4 |
+| PROB | 90.7 | 31.4 | 0.7 | 0.2275 | 5431 | 19.5 | 18.7 | 78.0 | 82.7 |
+| OWOBJ | 94.5 | **95.7** | 1.6 | 0.2338 | 1058 | 46.3 | 28.7 | 81.2 | 92.5 |
+| OW-DETR | 93.6 | 69.7 | 2.7 | 0.2453 | 1477 | 37.1 | 19.7 | 80.7 | 87.7 |
+| OrthogonalDet | 94.0 | 50.2 | 30.8 | 0.1483 | 1014 | 50.1 | 36.9 | 85.0 | 91.9 |
+| CROWD | 94.9 | 64.8 | 9.3 | 0.1374 | 1113 | 44.3 | 28.6 | 86.3 | 92.6 |
+| YOLO-UniOW | 96.2 | 37.3 | 37.5 | 0.2395 | 1227 | 39.8 | 13.8 | 81.6 | 91.8 |
+| YOLO-World v2-S | 95.2 | 71.7 | 6.2 | 0.1587 | 1006 | 53.1 | 25.9 | 85.7 | 93.3 |
+| **VERA** | 94.7 | 77.4 | 65.8 | **0.0291** | 475 | 77.2 | 46.6 | **93.3** | 94.3 |
 
-| Method | U-Recall ↑ | U-Precision ↑ | WI ↓ | A-OSE ↓ | All-5 ↑ | LA ↑ | AP50 ↑ | E2E ↑ |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Conf. (obj×cls) | 66.2 | 58.3 | 0.1526 | 712 | 66.2 | 44.7 | 83.0 | 88.7 |
-| MSP | 67.5 | 58.8 | 0.1457 | 685 | 67.5 | 46.6 | 82.9 | 88.7 |
-| MaxLogit | 67.5 | 58.8 | 0.1457 | 685 | 67.5 | 46.6 | 82.9 | 88.7 |
-| Energy | 67.3 | 58.8 | 0.1460 | 688 | 67.3 | 46.6 | 82.9 | 88.7 |
-| GEN | 68.1 | 60.0 | 0.1201 | 672 | 68.1 | 39.7 | 84.7 | 89.4 |
-| MDS | 32.9 | 43.8 | 0.3233 | 1435 | 32.6 | 21.2 | 76.9 | 87.3 |
-| RMDS | 61.9 | 57.7 | 0.1354 | 807 | 61.8 | 40.6 | 82.9 | 88.6 |
-| PROB | 31.7 | 0.7 | 0.2275 | 5421 | 19.9 | 18.7 | 78.0 | 82.5 |
-| OWOBJ | **95.7** | 1.6 | 0.2229 | 873 | 55.0 | 35.9 | 78.3 | 88.8 |
-| OW-DETR | 72.5 | 2.8 | 0.2338 | 1144 | 46.9 | 26.9 | 78.4 | 85.4 |
-| OrthogonalDet | 59.0 | 33.2 | 0.1481 | 824 | 58.9 | 43.7 | 82.7 | 89.0 |
-| CROWD | 74.0 | 10.3 | 0.1370 | 755 | 60.9 | 45.8 | 83.2 | 89.0 |
-| YOLO-UniOW | 44.3 | 34.6 | 0.2135 | 837 | 57.5 | 29.7 | 78.5 | 87.6 |
-| YOLO-World v2-S | 72.6 | 6.2 | 0.1535 | 691 | 67.8 | 40.4 | 82.1 | 89.4 |
-| **VERA (ours)** | 82.9 | **64.7** | **0.0561** | **356** | **82.8** | **59.8** | **89.0** | **90.0** |
+Post-hoc scores and the ResNet-50 verifier re-score the proposals of VERA's own detector. VERA's
+look-alike rejection minus OrthogonalDet's: 95% interval [1.8, 18.8]; minus MSP's: [8.3, 23.3].
+
+The ResNet-50 crop verifier (ImageNet ResNet-50 trained on known-type training crops, scoring the
+claimed-class margin) rejects as many look-alikes as VERA (VERA − verifier: −5.4, [−10.5, 0.3]). Its
+known AP50 drops to 82.1 and WI rises to 0.115, because the crop margin does not rank duplicate and
+poorly localized boxes below well-localized ones. The two kinds of evidence are complementary.
 
 ### Per-type unknown rejection (%)
 
-| Method | E-8 ↑ | Tu-22 ↑ | KC-10 ↑ | F-22 ↑ | Tu-95 ↑ |
+| Method | E-8 ↑ | Tu-22 ↑ | F-22 ↑ | Tu-95 ↑ | KC-10 ↑ |
 |---|---:|---:|---:|---:|---:|
-| Conf. (obj×cls) | 21.9 | 61.4 | 36.2 | 99.2 | 72.6 |
-| Energy | 25.9 | **63.0** | 35.6 | 99.2 | 73.5 |
-| GEN | 26.7 | 46.7 | 40.7 | 99.2 | 81.7 |
-| OrthogonalDet | 40.5 | 56.0 | 18.1 | 96.0 | 57.9 |
-| CROWD | 54.3 | 52.3 | 18.1 | 95.5 | 60.7 |
-| YOLO-UniOW | 36.8 | 24.2 | 33.3 | 97.9 | 66.8 |
-| YOLO-World v2-S | 27.5 | 47.9 | 40.1 | **100.0** | 80.1 |
-| **VERA (ours)** | **62.8** | 52.8 | **72.9** | 99.2 | **97.5** |
+| Conf. (obj×cls) | 10.5 | 48.4 | 99.2 | 53.6 | 24.3 |
+| Energy | 10.9 | 49.5 | 99.2 | 51.9 | 23.7 |
+| GEN | 15.4 | 35.8 | 98.4 | 68.8 | 29.9 |
+| ResNet-50 crop verifier | **55.9** | **54.4** | 91.0 | **98.5** | 40.7 |
+| OrthogonalDet | 32.4 | 48.4 | 95.8 | 43.5 | 15.3 |
+| CROWD | 28.7 | 36.5 | 95.0 | 38.2 | 9.0 |
+| YOLO-UniOW | 17.0 | 13.3 | 97.6 | 40.2 | 10.7 |
+| YOLO-World v2-S | 14.2 | 36.0 | **100.0** | 59.3 | 17.5 |
+| **VERA** | 44.1 | 42.6 | 99.2 | 96.8 | **59.9** |
 
-Identity-level confusion: VERA reduces **Tu-95 accepted as E-3** from 125 to 0, **E-8 accepted as
-KC-135** from 165 to 78, and **KC-10 accepted as KC-135** from 106 to 44.
+Identity-level confusion (development-calibrated thresholds, confidence → VERA): Tu-95 accepted as
+E-3 175 → 1, Tu-95 as KC-135 173 → 2, E-8 as KC-135 182 → 103, KC-10 as KC-135 122 → 69.
+
+Tu-22 is the one look-alike type for which VERA rejects less than confidence. Most Tu-22 are claimed
+as Su-24 and score well below correct Su-24 claims, but the single pooled threshold is set by the
+lowest-scoring known classes.
 
 ### Unknown rejection across retention levels
 
+Development targets of 70–97%, each threshold frozen on test, plotted against achieved test retention:
+
 <p align="center"><img src="docs/figures/retention_curves.png" width="85%"></p>
 
-### Cumulative evidence (ablation)
+### Cumulative evidence (matched 90.5% test retention)
 
 | Evidence | A-OSE ↓ | AP50 ↑ | All-5 ↑ | LA ↑ |
 |---|---:|---:|---:|---:|
 | Conf. | 712 | 82.98 | 66.20 | 44.73 |
-| + Appearance | 636 | 84.41 | 69.74 | 45.08 |
-| + Structure | 528 | 86.18 | 74.78 | 48.83 |
-| + Tail | 427 | 88.18 | 79.49 | 54.45 |
-| **+ Nose (= VERA)** | **356** | **89.02** | **82.80** | **59.84** |
+| + Appearance | 613 | 84.96 | 70.82 | 46.72 |
+| + Structure | 478 | 86.85 | 77.11 | 51.76 |
+| + Tail | 398 | 89.34 | 80.84 | 57.14 |
+| **+ Nose (= VERA)** | **314** | **89.79** | **84.76** | **63.82** |
 
-Each finer level adds rejection. Appearance alone adds little, as the data-processing argument
-predicts.
+### Design variants (matched 90.5% test retention)
 
-| Design variant | A-OSE ↓ | AP50 ↑ | All-5 ↑ | LA ↑ |
+| Variant | A-OSE ↓ | AP50 ↑ | All-5 ↑ | LA ↑ |
 |---|---:|---:|---:|---:|
-| **VERA** | **356** | **89.02** | **82.80** | **59.84** |
-| Appearance vs. other knowns (no background reference) | 644 | 88.40 | 69.37 | 33.02 |
-| Whole-body expert instead of tail/nose | 439 | 87.20 | 78.93 | 51.99 |
-| Gaussian LLR for expert terms | 389 | 88.31 | 81.26 | 56.09 |
-| Uniform structure weights | 376 | 88.87 | 81.86 | 57.49 |
+| **VERA** | 314 | 89.79 | 84.76 | 63.82 |
+| Unit weights (no standardization) | 356 | 89.02 | 82.80 | 59.84 |
+| Expert Gaussian LLR | 395 | 88.76 | 80.98 | 54.45 |
+| No objectness | 313 | 89.76 | 84.80 | 63.93 |
+| Uniform structure | 332 | 89.84 | 83.92 | 61.83 |
+| No engine-unit count | 322 | 89.87 | 84.38 | 62.88 |
+| Appearance vs. knowns (no background reference) | 367 | 90.30 | 82.28 | 57.61 |
+| Whole-body expert instead of tail/nose | 501 | 87.37 | 76.04 | 44.85 |
 
-### Task 2: incremental learning (detector-level VOC AP50)
+The whole-body expert has the same architecture as the region experts. Its lower rejection shows that
+the gain comes from looking at the discriminative regions, not from adding another classifier.
 
-There are two output rules:
-- **Known-label NMS (OWOD-style):** unknown outputs are discarded before NMS.
-- **All-label NMS (deployment-style):** every output competes, so each location carries a single label.
+### Robustness
 
-| Method | Input | Known-label T1 | Known-label T2 Prev. | Known-label T2 Curr. | Known-label T2 Both | All-label T1 | All-label T2 Prev. | All-label T2 Curr. | All-label T2 Both |
-|---|:-:|---:|---:|---:|---:|---:|---:|---:|---:|
-| PROB | 800 | 88.5 | 93.4 | 78.6 | 88.4 | 46.1 | 51.3 | 37.0 | 46.6 |
-| OWOBJ | 800 | 83.5 | 93.5 | 79.6 | 88.9 | 83.4 | 93.5 | 78.6 | 88.5 |
-| OrthogonalDet | 800 | 88.1 | 94.1 | 86.4 | 91.5 | 67.4 | 16.0 | 53.1 | 28.4 |
-| CROWD | 800 | 88.8 | **94.9** | **88.7** | **92.8** | 35.0 | 21.5 | 2.2 | 15.1 |
-| YOLO-UniOW | 640 | 83.0 | 82.0 | 27.0 | 63.6 | 82.8 | 81.9 | 21.8 | 61.9 |
-| YOLO-World v2-S | 640 | 88.8 | 92.2 | 81.2 | 88.6 | 88.5 | 92.2 | 79.8 | 88.1 |
-| **VERA (ours)** | 640 | **89.9** | 93.8 | 83.7 | 90.4 | **89.9** | **93.8** | **83.7** | **90.4** |
+| Check | Look-alike rejection, frozen τ | At matched 90.5% retention |
+|---|---:|---:|
+| Reported configuration | 46.6 (Ret. 94.7) | 63.8 |
+| Part detector retrained on the ten known types only (all stages) | 49.9 (Ret. 94.8) | 70.4 |
+| Five training variants (part-detector seeds, expert seed pairs) | 46.1–50.0 | 61.6–66.4 |
+
+MAR20-Parts contains no evaluated unknown type and no test image. Removing the fighter-type part
+annotations as well does not lower rejection.
+
+### Task 2: VERA as a complete system after incremental learning
+
+Task 2 learns Tu-22, F-22 and Tu-95 while E-8 and KC-10 stay unknown. The detector, references and
+region experts are retrained or refitted at 13 classes, and the scales and threshold come from the
+Task-2 development split. At 93.4% test retention:
+
+| | New-class acceptance ↑ | Old-known acceptance ↑ | E-8 + KC-10 rejection ↑ |
+|---|---:|---:|---:|
+| Confidence | 85.2 | – | 10.4 |
+| MSP | 85.4 | – | 11.8 |
+| **VERA** | **91.4** | 92.1 | **30.0** |
+
+VERA − confidence: [4.1, 9.1] points in new-class acceptance, [12.0, 28.3] in rejection.
+
+Detector-level incremental AP50 for the open-world baselines (two NMS output rules) is given in the
+supplementary material.
 
 ### Cross-dataset: RarePlanes (fine-tuned on attribute-defined classes)
 
-| Method | AP50 | E2E | All | Look-alike | Distinct |
-|---|---:|---:|---:|---:|---:|
-| Conf. | **79.5** | 88.3 | 46.5 | 47.6 | 44.7 |
-| MSP | 79.3 | **88.7** | 47.5 | 49.7 | 43.7 |
-| Energy | 79.3 | 88.6 | 47.9 | 50.3 | 43.7 |
-| **VERA (ours)** | 79.1 | 88.5 | **56.8** | **62.5** | **47.0** |
+| Method | E2E | All | LA | Distinct | Val-frozen Ret. | Val-frozen All | Val-frozen LA |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Conf. | 88.3 | 46.5 | 47.6 | 44.7 | 77.9 | 59.9 | 63.3 |
+| MSP | **88.7** | 47.5 | 49.7 | 43.7 | 78.6 | 63.5 | 67.4 |
+| Energy | 88.6 | 47.9 | 50.3 | 43.7 | 78.7 | 63.5 | 67.4 |
+| VERA w/o regions | 87.9 | 53.2 | 56.3 | **47.9** | – | – | – |
+| VERA w/o structure | 88.6 | **57.3** | **62.8** | **47.9** | – | – | – |
+| **VERA** | 88.2 | 56.4 | 61.4 | **47.9** | 78.9 | **65.2** | **72.8** |
 
-### Worked example: a Tu-95 claimed as E-3
+The detector, evidence references and region experts are retrained on attribute-defined known classes
+of the RarePlanes training split; the MAR20-Parts part detector stays frozen and has never seen
+RarePlanes imagery. On RarePlanes the gain comes from the appearance and region evidence; the part
+structure term adds nothing there.
 
-| Evidence | Tu-95 (claimed E-3) | E-3 median (346 correct) |
-|---|---:|---:|
-| Log confidence | −0.17 | −0.17 |
-| Appearance | +15.9 | +15.7 |
-| Structure | **−6.6** | −0.4 |
-| Tail | +0.7 | +2.8 |
-| Nose | **−2.3** | +3.0 |
-| Score (τ = 9.29) | **7.4 → unknown** | 20.3 |
+### Latency
 
-Appearance alone supports the false identity. Part structure and the nose expert supply the missing
-evidence, so the claim is refused.
+RTX 4060 Laptop GPU, batch size 1, FP32, mean over 192 test images: **347 ms per image** (P95 648 ms).
+Part detection on proposal crops takes 180 ms of this time, and structure scoring plus region experts
+take 117 ms. Latency grows with the number of aircraft: 163 ms for 0–2 aircraft and 858 ms for ≥ 11.
 
 <p align="center"><img src="docs/figures/qualitative.png" width="75%"></p>
 
-*Cyan boxes: known classes. Orange boxes: unknown. Dashed red: unknown-aircraft ground truth. Only
-VERA labels both unknowns as unknown and still keeps the E-3.*
+*Cyan boxes: known classes. Orange boxes: unknown. Dashed red: unknown-aircraft ground truth.*
+
+## Reproducing the main operating points
+
+[`results/scores/`](results/scores/) holds VERA's five evidence terms for every proposal on the
+development (3,693) and test (7,397) splits, together with the matching of every MAR20 ground-truth
+aircraft to its proposal:
+
+- `*_proposals.csv`: `proposal_index`, `mar20_image_id`, box `x1 y1 x2 y2`, `claimed_class`,
+  `log_detection`, `appearance`, `structure`, `tail`, `nose` (clipped), `vera_z`.
+- `*_gt_objects.csv`: `mar20_image_id`, `aircraft_type_code`, `label` (0–9 known, 10 unknown,
+  −1 fighter, ignored), `matched_proposal_index` (−1 = not localized), `scene_family_id`.
+
+```bash
+python scripts/reproduce_frozen_threshold.py --bootstrap 2000
+```
+
+```
+development scales {'log_detection': 0.7255, 'appearance': 9.3303, 'structure': 2.8002, 'tail': 1.6304, 'nose': 1.1726}
+development (calibration)      retention  90.5  look-alike rejection  53.5  all-unknown rejection  76.6  known E2E  90.0
+test, dev-frozen tau  [main]   retention  94.7  look-alike rejection  46.6  all-unknown rejection  77.2  known E2E  94.3
+test, test-calibrated tau      retention  90.5  look-alike rejection  63.8  all-unknown rejection  84.8  known E2E  90.3
+```
+
+Development scores are cross-fitted (5 folds), so the threshold is calibrated on out-of-sample scores,
+as on test.
 
 ## Usage
 
@@ -180,7 +235,7 @@ from vera import appearance, structure, experts, fusion
 app_model = appearance.fit_appearance(train_features, train_codes)
 ell_app = appearance.appearance_llr(app_model, features)                  # (n, 10)
 
-# Part structure from the frozen part detector's outputs.
+# Part structure from the part detector's outputs.
 records = [structure.make_record(row) for row in part_rows]
 _, _, ell_str = structure.fit_and_score(training_rows, [{'_record': r} for r in records])
 
@@ -189,27 +244,24 @@ m_tail = experts.region_evidence(tail_logits, claims, tail_available)
 m_nose = experts.region_evidence(nose_logits, claims, nose_available)
 
 rows = np.arange(len(claims))
-V = fusion.verification_score(np.log(obj * cls[rows, claims]), ell_app[rows, claims],
-                              ell_str[rows, claims], m_tail, m_nose)
-tau = fusion.threshold(V[known_mask])                                     # 90.5% retention
+terms = (np.log(obj * cls[rows, claims]), ell_app[rows, claims], ell_str[rows, claims], m_tail, m_nose)
+
+# Development split: fit scales on localized known proposals, then the threshold.
+scales = fusion.fit_scales(*[t[dev_known] for t in dev_terms])
+tau = fusion.threshold(fusion.verification_score(*dev_terms, scales=scales)[dev_known])
+
+# Test split: frozen scales and threshold.
+V = fusion.verification_score(*terms, scales=scales)
 labels = fusion.decide(V, claims, tau)                                    # -1 = unknown
 ```
 
 Requirements: Python ≥ 3.10, NumPy, SciPy, scikit-learn, OpenCV and PyTorch/torchvision (for the
-region experts). See [`requirements.txt`](requirements.txt).
+region experts). See [`requirements.txt`](requirements.txt). Model weights are not included.
 
 ## Data
 
-The MAR20-Parts annotations are not included in this repository; [`data/`](data/) is a placeholder.
+- [`data/splits.json`](data/splits.json): MAR20 train / development / test image ids and scene families.
+- [`data/mar20_parts/`](data/mar20_parts/): the MAR20-Parts part annotations (511 aircraft, 4,305
+  polygons) in MAR20 image coordinates. See [`data/README.md`](data/README.md).
+
 MAR20 images are available from the official MAR20 release.
-
-## Citation
-
-```bibtex
-@article{wong2026vera,
-  title   = {When Unknown Aircraft Look Familiar: Open-World Aircraft Detection with
-             Coarse-to-Fine Structural Evidence in Satellite Imagery},
-  author  = {Wong, Yit Hong and Lu, Chenglu and Xia, Qijun and Chen, Hongtian},
-  year    = {2026}
-}
-```

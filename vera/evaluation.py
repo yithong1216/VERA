@@ -1,4 +1,10 @@
-"""Evaluation at a fixed known retention: known end-to-end accuracy, unknown rejection per group and AUROC."""
+"""Evaluation: known end-to-end accuracy, unknown rejection per group, achieved known retention and AUROC.
+
+Protocol used in the paper: tau is calibrated once on the development split
+(summary(dev_scene, dev_score) with tau=None) and then passed unchanged to
+summary(test_scene, test_score, tau=tau). The achieved test retention is reported
+next to every rejection rate. The bootstrap resamples test scene families with tau held fixed.
+"""
 import numpy as np
 
 KNOWN = ['A2','A3','A4','A6','A7','A8','A9','A10','A14','A20']
@@ -6,7 +12,7 @@ UNKNOWN = ['A11','A12','A15','A17','A18']
 GROUPS = {'all5':UNKNOWN,'G3':['A11','A12','A18'], **{c:[c] for c in UNKNOWN}}
 
 
-def summary(scene, score, weights=None):
+def summary(scene, score, weights=None, tau=None, retention=0.905):
     lab, code, prop, pred = [scene[k] for k in ('label','code','prop','pred')]
     w = np.ones(len(lab), int) if weights is None else np.asarray(weights)
     assert w.shape == lab.shape and w.dtype.kind in 'iu' and np.all(w >= 0)
@@ -15,9 +21,11 @@ def summary(scene, score, weights=None):
     sp = np.where(loc, score[np.maximum(prop,0)], -np.inf)
     pp = np.where(loc, pred[np.maximum(prop,0)], -9)
     localized_known = known & loc
-    calibration = np.repeat(sp[localized_known], w[localized_known])
-    assert len(calibration) and w[known].sum()
-    tau = float(np.quantile(calibration, 1-0.905))
+    assert w[known].sum()
+    if tau is None:  # calibrate on this split (use only on the development split)
+        calibration = np.repeat(sp[localized_known], w[localized_known])
+        assert len(calibration)
+        tau = float(np.quantile(calibration, 1-retention))
     accept = sp >= tau
     correct = known & loc & accept & (pp == lab)
     out = dict(tau=tau, known_e2e=float((w*correct).sum()/w[known].sum()),
@@ -39,6 +47,21 @@ def summary(scene, score, weights=None):
             retention_all_GT=kept/n if n else None,
             retention_localized=kept/nl if nl else None)
     return out
+
+
+def family_bootstrap(scene, score, family, tau, n=2000, seed=20260930):
+    """Scene-family bootstrap with a frozen tau; returns n flat summaries.
+
+    family: one scene-family id per GT object in scene (objects of one family are drawn together).
+    """
+    family = np.asarray(family)
+    fams, inverse = np.unique(family, return_inverse=True)
+    rng = np.random.default_rng(seed)
+    draws = []
+    for _ in range(n):
+        counts = np.bincount(rng.integers(0, len(fams), len(fams)), minlength=len(fams))
+        draws.append(flat_summary(summary(scene, score, weights=counts[inverse], tau=tau)))
+    return draws
 
 
 def flat_summary(r):
